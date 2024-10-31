@@ -1,0 +1,176 @@
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Servo.h>
+#include <Wire.h>  // I2C 통신을 위한 Wire 라이브러리
+#include <MPR121.h>  // MPR121 터치 센서 라이브러리
+
+#define RST_PIN 9
+#define SS_PIN 10
+#define SERVO_PIN 5 // 서보 모터 연결 핀
+#define BUZZER 6
+
+int pirPin = 2;    // PIR 센서가 연결된 핀
+int ledPin = 4;   // LED가 연결된 핀
+int pirState = LOW; // PIR 센서의 초기 상태
+unsigned long ledOnTime = 0; // LED가 켜진 시간을 기록하는 변수
+int ledDuration = 5000; // LED가 켜진 상태를 유지할 시간 (밀리초 단위, 5000ms = 5초)
+
+MFRC522 mfrc(SS_PIN, RST_PIN); // MFRC522 객체 생성
+Servo doorServo; // 서보 모터 객체 생성
+
+// 카드 번호를 배열로 정의
+byte validUID[] = {0x23, 0x09, 0x8D, 0x0F}; // 카드 번호 (23 9 8D F)
+const int uidSize = sizeof(validUID) / sizeof(validUID[0]);
+
+#define PHONE_DIGITS 5 // 1234# 입력
+char phoneNumber[PHONE_DIGITS];
+int phoneIndex = 0; // 입력된 키패드의 인덱스
+
+void setup() {
+  pinMode(pirPin, INPUT);    // PIR 센서를 입력으로 설정
+  pinMode(ledPin, OUTPUT);   // LED를 출력으로 설정
+  pinMode(BUZZER,OUTPUT);
+  SPI.begin(); // SPI 초기화
+  mfrc.PCD_Init();
+  doorServo.attach(SERVO_PIN); // 서보 모터 핀 연결
+  doorServo.write(0); // 초기 위치 (문 닫힘 상태)
+  Serial.begin(9600);        // 시리얼 모니터 시작 (디버깅 용도)
+  Wire.begin();        // I2C 통신 초기화
+  mpr121QuickConfig(); // MPR121 빠른 설정
+  Serial.println("RFID 리더 준비 완료");
+}
+
+void loop() {
+  pirState = digitalRead(pirPin); // PIR 센서의 상태를 읽음
+
+  if (mfrc.PICC_IsNewCardPresent() && mfrc.PICC_ReadCardSerial()) {
+    Serial.println("카드 인식됨!");
+
+    // UID 확인
+    if (checkUID(mfrc.uid.uidByte, mfrc.uid.size)) {
+      tone(BUZZER, 262, 500);
+      delay(500);
+      tone(BUZZER, 294, 500);
+      openDoor(); // 문 열기 함수 호출
+    } else {
+      Serial.println("인증 실패: 권한 없음.");
+    }
+
+    // 카드 읽기 완료 후 카드 잠금 해제
+    mfrc.PICC_HaltA();
+  }
+  
+  // PIR 센서가 모션을 감지했을 때
+  if (pirState == HIGH) {
+    digitalWrite(ledPin, HIGH);   // LED 켜기
+    ledOnTime = millis();         // LED가 켜진 시간 기록
+    Serial.println("Motion detected!");
+  }
+
+  // LED를 5초간 켠 후 끄기
+  if (digitalRead(ledPin) == HIGH && millis() - ledOnTime >= ledDuration) {
+    digitalWrite(ledPin, LOW);   // 5초 후 LED 끄기
+    Serial.println("LED turned off");
+  }
+
+  // 터치패드 입력 확인
+  if (checkTouchInput()) {
+    if (strcmp(phoneNumber, "1234#") == 0) {
+      Serial.println("정상적인 키패드 입력. 문을 엽니다.");
+      openDoor();
+    } else {
+      Serial.println("잘못된 키패드 입력.");
+      resetPhoneNumber();
+    }
+  }
+
+  delay(100); // 너무 자주 체크하지 않도록 약간의 지연
+}
+
+bool checkUID(byte *uid, byte size) {
+  if (size != uidSize) {
+    return false; // UID 길이가 다르면 false
+  }
+  for (byte i = 0; i < size; i++) {
+    if (uid[i] != validUID[i]) {
+      return false; // UID가 다르면 false
+    }
+  }
+  return true; // 모든 UID가 일치하면 true
+}
+
+// 문을 여는 함수
+void openDoor() {
+  Serial.println("문이 열립니다!");
+  doorServo.write(90); // 서보 모터를 90도로 회전 (문 열림)
+  delay(2000); // 2초간 기다림 (문 열림 상태 유지)
+  doorServo.write(0); // 서보 모터를 0도로 돌아가게 하여 문을 닫음
+  Serial.println("문이 닫힙니다!");
+}
+
+// 터치패드 입력 확인 함수
+bool checkTouchInput() {
+  uint16_t touchstatus = (mpr121Read(0x01) << 8) | mpr121Read(0x00);
+
+  for (int j = 0; j < 12; j++) {
+    if (touchstatus & (1 << j)) {
+      char key = getKey(j);
+      phoneNumber[phoneIndex++] = key;
+      Serial.print(key);
+      if (phoneIndex >= PHONE_DIGITS) {
+        phoneIndex = 0; // 인덱스 초기화
+        return true;    // 입력 완료 시 true 반환
+      }
+    }
+  }
+  return false;
+}
+
+// 입력된 번호 리셋
+void resetPhoneNumber() {
+  for (int i = 0; i < PHONE_DIGITS; i++) {
+    phoneNumber[i] = '\0'; // 번호 초기화
+  }
+  phoneIndex = 0;
+}
+
+// 터치된 키를 문자로 변환
+char getKey(int key) {
+  switch (key) {
+    case 0: return '*';
+    case 1: return '7';
+    case 2: return '4';
+    case 3: return '1';
+    case 4: return '0';
+    case 5: return '8';
+    case 6: return '5';
+    case 7: return '2';
+    case 8: return '#';
+    case 9: return '9';
+    case 10: return '6';
+    case 11: return '3';
+    default: return ' ';
+  }
+}
+
+// MPR121의 특정 레지스터 값을 읽는 함수 (Wire.h 사용)
+byte mpr121Read(uint8_t address) {
+  Wire.beginTransmission(0x5A); // MPR121 주소
+  Wire.write(address);          // 레지스터 주소 전송
+  Wire.endTransmission(false);  // 전송 완료 후 재시작 유지
+  Wire.requestFrom(0x5A, 1);    // 데이터 요청
+  return Wire.read();           // 데이터 읽기
+}
+
+// MPR121의 특정 레지스터에 데이터 쓰기
+void mpr121Write(uint8_t address, uint8_t data) {
+  Wire.beginTransmission(0x5A); // MPR121 주소
+  Wire.write(address);          // 레지스터 주소 전송
+  Wire.write(data);             // 데이터 쓰기
+  Wire.endTransmission();       // 전송 완료
+}
+
+// MPR121 빠른 설정
+void mpr121QuickConfig() {
+  mpr121Write(0x5A, 0x0C);  // 기본 설정
+}
