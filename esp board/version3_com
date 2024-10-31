@@ -1,0 +1,55 @@
+//esp 통신 코드예제
+#include <WiFi.h>
+
+
+const char* ssid = "test01";
+const char* password = "12341234";
+const uint16_t port = 9000;
+const char * host = "192.168.0.15";
+
+
+WiFiClient client;
+
+
+void setup()
+{
+  Serial.begin(115200);
+
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.println("...");
+  }
+
+
+  Serial.print("WiFi connected with IP: ");
+  Serial.println(WiFi.localIP());
+
+
+  if (!client.connect(host, port)) {
+        Serial.println("Connection to host failed");
+        delay(1000);
+        return;
+    }
+ 
+}
+ 
+void loop()
+{
+
+
+  //Serial.println("Disconnecting...");
+  if(Serial.available()){
+    client.write(Serial.read());  
+  }
+  if(client.available()){
+    String c = client.readStringUntil('\n');
+    Serial.println(c);  
+  }
+  if (!client.connected()) {
+        Serial.println("Connection to host failed");
+        delay(1000);
+        return;
+    }
+}
